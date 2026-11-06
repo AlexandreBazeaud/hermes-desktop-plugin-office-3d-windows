@@ -33,6 +33,15 @@ from typing import Any, Dict, List, Optional
 # Resolve the Hermes home the same way the app does: honour $HERMES_HOME (set
 # under a named profile / custom install), fall back to ~/.hermes.
 HERMES_HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+# Under a named profile $HERMES_HOME points at <root>/profiles/<name>; the office
+# lists every profile, so scan the root. Newer Hermes resolves it (and the
+# platform default home, e.g. %LOCALAPPDATA%\\hermes on Windows) for us.
+try:
+    from hermes_constants import get_default_hermes_root as _get_root
+
+    HERMES_HOME = str(_get_root())
+except Exception:  # older Hermes: keep the env / ~/.hermes behaviour
+    pass
 
 # A session counts as "active" (profile busy) if it saw activity this recently.
 ACTIVE_WINDOW_SEC = 90.0
@@ -95,6 +104,35 @@ def _discover_profiles() -> List[str]:
     return order
 
 
+def _win32_pid_alive(pid: int) -> bool:
+    """Windows liveness probe that never signals the target.
+
+    OpenProcess + WaitForSingleObject(handle, 0), the same probe Hermes uses in
+    hermes_cli._subprocess_compat.win32_pid_exists. os.kill(pid, 0) is NOT safe
+    here: Windows routes it through TerminateProcess.
+    """
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint
+        kernel32.GetLastError.restype = ctypes.c_uint
+        PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE = 0x1000, 0x100000
+        WAIT_TIMEOUT, ERROR_ACCESS_DENIED = 0x00000102, 5
+        handle = kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid
+        )
+        if not handle:
+            return kernel32.GetLastError() == ERROR_ACCESS_DENIED
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, AttributeError):
+        return False
+
+
 def _pid_alive(pid: Any) -> bool:
     """True when ``pid`` is a live process.
 
@@ -108,9 +146,9 @@ def _pid_alive(pid: Any) -> bool:
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     if os.name == "nt":
-        return False
+        return _win32_pid_alive(pid)
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # windows-footgun: ok - POSIX-only branch (Windows returned above)
         return True
     except ProcessLookupError:
         return False

@@ -14,8 +14,6 @@ requires_hermes: ">=0.20.0"
 kind: standalone
 provides_tools:
   - office_status
-# The backend judges profile liveness with os.kill(pid, 0). On Windows every
-# signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT is routed through
-# TerminateProcess, so os.kill(pid, 0) would *kill* the target process (the
-# gateway). The plugin is therefore POSIX-only.
-platforms: [linux, macos]
+# Liveness: os.kill(pid, 0) on POSIX; on Windows an OpenProcess/
+# WaitForSingleObject probe (os.kill would TerminateProcess the target there).
+platforms: [linux, macos, windows]
